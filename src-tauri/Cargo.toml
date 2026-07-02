@@ -1,0 +1,19 @@
+[package]
+name = "opencode-agent-manager"
+version = "0.1.0"
+description = "Desktop manager for OpenCode agents"
+authors = ["marques"]
+edition = "2021"
+
+[lib]
+name = "opencode_agent_manager_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tauri = { version = "2.0", features = [] }

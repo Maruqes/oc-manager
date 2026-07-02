@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OpenCode Agent Manager",
+  "version": "0.1.0",
+  "identifier": "dev.marques.opencode-agent-manager",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "OpenCode Agent Manager",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 1212,
+        "minHeight": 720
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": []
+  }
+}
