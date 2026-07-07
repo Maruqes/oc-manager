@@ -1,25 +1,25 @@
-# Formato de Configuração OpenCode
+# OpenCode Configuration Format
 
-Documento de trabalho para mapear formatos reais encontrados em configs OpenCode.
+Working document for mapping real formats found in OpenCode configs.
 
-## Candidatos iniciais
+## Initial Candidates
 
-- ficheiros `.json`, `.jsonc` e `.md` encontrados recursivamente no projeto atual
-- ficheiros `.json`, `.jsonc` e `.md` encontrados recursivamente em `~/.config/opencode/`
-- pastas óbvias de build/cache/dependências são ignoradas
-- ficheiros candidatos não-OpenCode muito grandes são ignorados para evitar custo excessivo de leitura/parsing
+- `.json`, `.jsonc`, and `.md` files found recursively in the current project.
+- `.json`, `.jsonc`, and `.md` files found recursively in `~/.config/opencode/`.
+- Obvious build/cache/dependency folders are ignored.
+- Very large non-OpenCode candidate files are ignored to avoid excessive read/parsing cost.
 
-O scanner lê candidatos de forma ampla, mas só adiciona ao resultado ficheiros que tenham sinais de OpenCode/agente:
+The scanner reads candidates broadly, but only adds files to the result when they contain OpenCode/agent signals:
 
-- mapa `agent` ou `agents`
-- ficheiro em pasta `agents/` ou `agent/`
-- `opencode.json` ou `opencode.jsonc`
-- frontmatter Markdown com campos de agente
-- `permission`/`instructions` em caminho provável de OpenCode
+- `agent` or `agents` map.
+- File inside an `agents/` or `agent/` folder.
+- `opencode.json` or `opencode.jsonc`.
+- Markdown frontmatter with agent fields.
+- `permission`/`instructions` in a likely OpenCode path.
 
-Para evitar falsos positivos, Markdown sem frontmatter não vira agente apenas por estar numa pasta chamada `agents`. JSON/Markdown fora de caminhos prováveis precisa de sinais explícitos de agente, como `mode`, `model`, `permission`, `tools` ou limites de execução.
+To avoid false positives, Markdown without frontmatter does not become an agent only because it is inside a folder named `agents`. JSON/Markdown outside likely paths needs explicit agent signals such as `mode`, `model`, `permission`, `tools`, or execution limits.
 
-## Campos normalizados no MVP
+## MVP Normalized Fields
 
 - `name`
 - `type`
@@ -28,18 +28,18 @@ Para evitar falsos positivos, Markdown sem frontmatter não vira agente apenas p
 - `instructions`
 - `permissions`
 
-## Estruturas reconhecidas
+## Recognized Structures
 
-### Mapa `agent`
+### `agent` Map
 
 ```jsonc
 {
   "agent": {
     "reviewer": {
       "mode": "subagent",
-      "description": "Revisor de código",
+      "description": "Code reviewer",
       "model": "provider/model",
-      "prompt": "Instruções...",
+      "prompt": "Instructions...",
       "tools": {
         "read": true,
         "write": false
@@ -49,41 +49,41 @@ Para evitar falsos positivos, Markdown sem frontmatter não vira agente apenas p
 }
 ```
 
-### Mapa `agents`
+### `agents` Map
 
-Também é aceite para compatibilidade.
+Also accepted for compatibility.
 
-### Ficheiros individuais em `agents/`
+### Individual Files In `agents/`
 
-Um ficheiro JSON/JSONC dentro de uma pasta chamada `agents` é tratado como subagent.
+A JSON/JSONC file inside a folder named `agents` is treated as a subagent.
 
-## Heurísticas atuais
+## Current Heuristics
 
 - `mode/type/agentType = primary|main|default` => primary agent.
 - `mode/type/agentType = subagent|sub-agent|sub` => subagent.
-- ficheiros dentro de `agents/` => subagent.
-- configs top-level com `model`, `prompt`, `instructions`, `system`, `tools` ou `permissions` => agente individual.
-- permissões com `write`, `edit`, `delete`, `bash`, `shell`, `command` ou `exec` => alto risco se ativas.
-- permissões com `network`, `web`, `http` ou `fetch` => risco médio.
+- Files inside `agents/` => subagent.
+- Top-level configs with `model`, `prompt`, `instructions`, `system`, `tools`, or `permissions` => individual agent.
+- Permissions with `write`, `edit`, `delete`, `bash`, `shell`, `command`, or `exec` => high risk when active.
+- Permissions with `network`, `web`, `http`, or `fetch` => medium risk.
 
-O scanner real deve preservar `rawConfig` para evitar perda de dados ao guardar.
+The real scanner must preserve `rawConfig` to avoid data loss when saving.
 
-## Modelo real de permissões OpenCode
+## Real OpenCode Permission Model
 
-O schema oficial não define uma entidade chamada `permissionProfiles`. A aplicação usa esse nome apenas como visualização derivada de:
+The official schema does not define an entity called `permissionProfiles`. The application uses that name only as a derived view of:
 
-- `permission` global.
-- `agent.<name>.permission` como override por agente.
-- `tools` legado, marcado como deprecated.
-- permissões efetivas calculadas para cada agente.
+- Global `permission`.
+- `agent.<name>.permission` as an agent override.
+- Legacy `tools`, marked as deprecated.
+- Effective permissions calculated for each agent.
 
-As ações válidas são:
+Valid actions are:
 
 - `allow`
 - `ask`
 - `deny`
 
-Regras granulares podem usar padrões:
+Granular rules can use patterns:
 
 ```jsonc
 {
@@ -101,6 +101,6 @@ Regras granulares podem usar padrões:
 }
 ```
 
-## Agentes Markdown
+## Markdown Agents
 
-Também são reconhecidos ficheiros `*.md` em diretórios `agents/`. O parser MVP lê frontmatter simples e trata o corpo markdown como prompt do agente.
+`*.md` files in `agents/` directories are also recognized. The MVP parser reads simple frontmatter and treats the markdown body as the agent prompt.

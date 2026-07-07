@@ -1,6 +1,6 @@
 # OpenCode Agent Manager
 
-Aplicação desktop para gerir visualmente agentes do OpenCode.
+Desktop application for visually managing OpenCode agents.
 
 ## Stack
 
@@ -9,16 +9,16 @@ Aplicação desktop para gerir visualmente agentes do OpenCode.
 - Zustand
 - CSS modular simples no MVP, preparado para migrar/adicionar Tailwind + shadcn/ui
 
-## Desenvolvimento
+## Development
 
 ```bash
 npm install
 npm run tauri dev
 ```
 
-## Estrutura
+## Structure
 
 - `src/`: frontend
 - `src-tauri/`: backend Rust/Tauri
 - `shared/`: contratos/tipos documentados
-- `docs/`: documentação de arquitetura e MVP
+- `docs/`: architecture and MVP documentation

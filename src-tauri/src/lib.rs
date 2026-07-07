@@ -18,7 +18,11 @@ pub fn run() {
             commands::delete_config_file,
             commands::save_permission_profile,
             commands::create_config_file,
-            commands::list_opencode_models
+            commands::run_agent_chat,
+            commands::list_opencode_models,
+            commands::list_skills,
+            commands::install_skill,
+            commands::delete_skill
         ])
         .run(tauri::generate_context!())
         .expect("failed to run OpenCode Agent Manager");

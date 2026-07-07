@@ -2,7 +2,7 @@ export type PermissionValue = "allow" | "ask" | "deny";
 
 export type AgentMode = "primary" | "subagent" | "all";
 
-export type ProviderId = "openai" | "anthropic" | "gemini" | "ollama" | "lmstudio" | "opencode-go" | "custom";
+export type ProviderId = "openai" | "anthropic" | "gemini" | "ollama" | "lmstudio" | "opencode-go" | "opencode" | "custom";
 
 export type BashRule = {
   pattern: string;
@@ -150,6 +150,7 @@ export const PROVIDER_OPTIONS: Array<{ value: ProviderId; label: string }> = [
   { value: "ollama", label: "Ollama" },
   { value: "lmstudio", label: "LM Studio" },
   { value: "opencode-go", label: "OpenCode Go" },
+  { value: "opencode", label: "OpenCode" },
   { value: "custom", label: "Custom" },
 ];
 

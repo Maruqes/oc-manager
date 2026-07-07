@@ -58,7 +58,7 @@ export function IdentitySection({ agent, update, errors }: SectionProps) {
         label="Description"
         value={agent.description}
         onChange={(description) => update({ description })}
-        placeholder="Revê código sem alterar ficheiros, procurando bugs e regressões."
+        placeholder="Review code without changing files, looking for bugs and regressions."
         rows={2}
         error={fieldError(errors, "description")}
         hint="Used for routing and @ autocomplete"

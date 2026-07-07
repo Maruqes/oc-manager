@@ -3,10 +3,11 @@ import { SourceBadge } from "../../../components/common/SourceBadge";
 import { Badge } from "../../../components/ui/Badge";
 import { Card } from "../../../components/ui/Card";
 import { useAgentsStore } from "../store/agentsStore";
+import { isDefaultOpenCodeConfig } from "../utils/defaultConfig";
 import { RawJsonViewer } from "./RawJsonViewer";
 
 export function ConfigFilesView() {
-  const configFiles = useAgentsStore((state) => state.configFiles);
+  const configFiles = useAgentsStore((state) => state.configFiles.filter((file) => !isDefaultOpenCodeConfig(file.path, file.source)));
 
   if (configFiles.length === 0) {
     return <Card className="empty-state">No OpenCode config files discovered.</Card>;

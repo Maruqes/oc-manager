@@ -4,8 +4,15 @@ use crate::services::save_service::{EditableAgent, EditablePermissionProfile, Sa
 use crate::services::scan_service::ScanService;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+use tauri::Emitter;
+
+static CHAT_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[tauri::command]
 pub async fn scan_agents(project_root: Option<String>) -> Result<ScanResult, AppError> {
@@ -40,14 +47,14 @@ fn resolve_discovered_source_path(
 ) -> Result<PathBuf, AppError> {
     let path = expand_home(source_path);
     let canonical_path = path.canonicalize().map_err(|error| {
-        AppError::Filesystem(format!("Localização do agente não encontrada: {error}"))
+        AppError::Filesystem(format!("Agent location not found: {error}"))
     })?;
 
     if is_openable_discovered_path_shape(&canonical_path, project_root.as_deref()) {
         Ok(canonical_path)
     } else {
         Err(AppError::Validation(
-            "Localização não pertence a uma configuração de agente descoberta.".into(),
+            "Location does not belong to a discovered agent configuration.".into(),
         ))
     }
 }
@@ -102,13 +109,13 @@ fn location_to_open(path: &Path) -> PathBuf {
 fn open_path(path: &Path) -> Result<(), AppError> {
     let status = platform_open_command(path)
         .status()
-        .map_err(|error| AppError::Filesystem(format!("Não foi possível abrir a localização: {error}")))?;
+        .map_err(|error| AppError::Filesystem(format!("Could not open location: {error}")))?;
 
     if status.success() {
         Ok(())
     } else {
         Err(AppError::Filesystem(format!(
-            "O sistema recusou abrir a localização: {}",
+            "The system refused to open the location: {}",
             path.display()
         )))
     }
@@ -142,6 +149,496 @@ pub struct ModelInfo {
     pub provider: String,
     pub model: String,
     pub variants: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillInfo {
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentChatResult {
+    pub stdout: String,
+    pub stderr: String,
+}
+
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentChatStreamEvent {
+    pub stream_id: String,
+    pub stream: String,
+    pub kind: String,
+    pub text: String,
+    pub raw: String,
+}
+
+#[tauri::command]
+pub async fn run_agent_chat(
+    window: tauri::Window,
+    model: String,
+    variant: Option<String>,
+    prompt: String,
+    stream_id: String,
+) -> Result<AgentChatResult, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let model = model.trim();
+        let prompt = prompt.trim();
+        if model.is_empty() || !model.contains('/') {
+            return Err(AppError::Validation("Select a valid provider/model.".into()));
+        }
+        if prompt.is_empty() {
+            return Err(AppError::Validation("Enter a prompt for the chatbot.".into()));
+        }
+        if prompt.len() > 24_000 {
+            return Err(AppError::Validation(
+                "The chatbot prompt is too large. Shorten the request or the selected agent prompt.".into(),
+            ));
+        }
+
+        let run_dir = create_agent_chat_run_dir(model, variant.as_deref())?;
+
+        let mut command = Command::new("opencode");
+        command
+            .arg("run")
+            .arg("--dir")
+            .arg(&run_dir)
+            .arg("--pure")
+            .arg("--agent")
+            .arg("agent-config-generator")
+            .arg("--model")
+            .arg(model)
+            .arg("--format")
+            .arg("json")
+            .arg("--thinking")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        if let Some(variant) = variant.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
+            command.arg("--variant").arg(variant);
+        }
+
+        command.arg("--").arg(prompt);
+
+        emit_agent_chat_event(&window, &stream_id, "status", "status", "Starting OpenCode...", "");
+        let output_result = command.output_with_stream_timeout(Duration::from_secs(180), window.clone(), stream_id.clone());
+        let _ = fs::remove_dir_all(&run_dir);
+        let output = output_result?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        if !output.status.success() {
+            return Err(AppError::Filesystem(format!(
+                "opencode run failed: {}",
+                if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() }
+            )));
+        }
+
+        Ok(AgentChatResult { stdout, stderr })
+    })
+    .await
+    .map_err(|error| AppError::Filesystem(format!("agent chat thread failed: {error}")))?
+}
+
+fn create_agent_chat_run_dir(model: &str, variant: Option<&str>) -> Result<PathBuf, AppError> {
+    let run_dir = std::env::temp_dir().join(format!(
+        "oc-manager-chat-{}-{}-{}",
+        std::process::id(),
+        now_millis(),
+        CHAT_RUN_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let config_dir = run_dir.join(".opencode");
+    fs::create_dir_all(&config_dir)
+        .map_err(|error| AppError::Filesystem(format!("Could not prepare chatbot sandbox: {error}")))?;
+
+    let mut agent = serde_json::Map::new();
+    agent.insert("description".into(), serde_json::json!("Generate reviewed OpenCode agent configuration proposals."));
+    agent.insert("mode".into(), serde_json::json!("primary"));
+    agent.insert("model".into(), serde_json::json!(model));
+    if let Some(variant) = variant.map(str::trim).filter(|value| !value.is_empty()) {
+        agent.insert("variant".into(), serde_json::json!(variant));
+    }
+    agent.insert("temperature".into(), serde_json::json!(0.2));
+    agent.insert("steps".into(), serde_json::json!(12));
+    agent.insert(
+        "prompt".into(),
+        serde_json::json!("You generate JSON proposals for OpenCode agents. Never use tools. Never edit files. Return only JSON."),
+    );
+    agent.insert(
+        "permission".into(),
+        serde_json::json!({
+            "read": "deny",
+            "edit": "deny",
+            "bash": "deny",
+            "webfetch": "deny",
+            "websearch": "deny",
+            "task": "deny",
+            "externalDirectory": "deny"
+        }),
+    );
+
+    let config = serde_json::json!({
+        "agent": {
+            "agent-config-generator": agent
+        }
+    });
+    fs::write(config_dir.join("opencode.jsonc"), serde_json::to_string_pretty(&config).unwrap())
+        .map_err(|error| AppError::Filesystem(format!("Could not write chatbot sandbox config: {error}")))?;
+
+    Ok(run_dir)
+}
+
+fn now_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub async fn list_skills() -> Result<Vec<SkillInfo>, AppError> {
+    tauri::async_runtime::spawn_blocking(list_installed_skills)
+        .await
+        .map_err(|error| AppError::Filesystem(format!("list skills thread failed: {error}")))?
+}
+
+#[tauri::command]
+pub async fn install_skill(skill: String) -> Result<Vec<SkillInfo>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let install_args = parse_skill_install_args(&skill)?;
+        let status = npx_command()
+            .arg("--yes")
+            .arg("skills")
+            .arg("add")
+            .args(&install_args)
+            .arg("-g")
+            .arg("-y")
+            .env("DISABLE_TELEMETRY", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status_with_timeout(Duration::from_secs(120))?;
+
+        if !status.success() {
+            let display_name = install_args.join(" ");
+            return Err(AppError::Filesystem(format!(
+                "Failed to install skill '{display_name}'. Check the identifier on skills.sh and try again."
+            )));
+        }
+
+        list_installed_skills()
+    })
+    .await
+    .map_err(|error| AppError::Filesystem(format!("install skill thread failed: {error}")))?
+}
+
+#[tauri::command]
+pub async fn delete_skill(skill_name: String) -> Result<Vec<SkillInfo>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let skill_name = normalize_skill_name(&skill_name)?;
+        let skills_dir = skills_dir()?;
+        let skill_path = skills_dir.join(&skill_name);
+        let canonical_skills_dir = skills_dir.canonicalize().map_err(|error| {
+            AppError::Filesystem(format!("Could not open the skills folder: {error}"))
+        })?;
+        let canonical_skill_path = skill_path.canonicalize().map_err(|error| {
+            AppError::Filesystem(format!("Skill '{skill_name}' not found: {error}"))
+        })?;
+
+        if canonical_skill_path.parent() != Some(canonical_skills_dir.as_path()) || !canonical_skill_path.is_dir() {
+            return Err(AppError::Validation("Invalid skill path.".into()));
+        }
+
+        fs::remove_dir_all(&canonical_skill_path).map_err(|error| {
+            AppError::Filesystem(format!("Could not delete skill '{skill_name}': {error}"))
+        })?;
+
+        list_installed_skills()
+    })
+    .await
+    .map_err(|error| AppError::Filesystem(format!("delete skill thread failed: {error}")))?
+}
+
+fn list_installed_skills() -> Result<Vec<SkillInfo>, AppError> {
+    let skills_dir = skills_dir()?;
+    if !skills_dir.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut skills = fs::read_dir(&skills_dir)
+        .map_err(|error| AppError::Filesystem(format!("Could not read skills: {error}")))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() || !path.join("SKILL.md").is_file() {
+                return None;
+            }
+            let name = path.file_name()?.to_str()?.to_string();
+            Some(SkillInfo {
+                name,
+                path: path.to_string_lossy().to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(skills)
+}
+
+fn skills_dir() -> Result<PathBuf, AppError> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".agents/skills"))
+        .ok_or_else(|| AppError::Validation("Could not resolve the HOME directory.".into()))
+}
+
+fn normalize_skill_input(skill: &str) -> Result<String, AppError> {
+    let skill = skill.trim();
+    if skill.is_empty() {
+        return Err(AppError::Validation("Enter the skill name to install.".into()));
+    }
+
+    if !skill
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | '/' | '@'))
+    {
+        return Err(AppError::Validation(
+            "Use only letters, numbers, hyphens, underscores, dots, @, or slashes in the skill identifier.".into(),
+        ));
+    }
+
+    Ok(skill.to_string())
+}
+
+fn parse_skill_install_args(input: &str) -> Result<Vec<String>, AppError> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err(AppError::Validation("Enter the skill name to install.".into()));
+    }
+
+    let input = input.strip_prefix("npx skills add ").unwrap_or(input).trim();
+    let parts = input.split_whitespace().collect::<Vec<_>>();
+    match parts.as_slice() {
+        [skill] => Ok(vec![normalize_skill_source(skill)?]),
+        [source, flag, skill_name] if *flag == "--skill" => Ok(vec![
+            normalize_skill_source(source)?,
+            "--skill".to_string(),
+            normalize_skill_input(skill_name)?,
+        ]),
+        _ => Err(AppError::Validation(
+            "Use a skill name, owner/repo@skill, or URL --skill name from skills.sh.".into(),
+        )),
+    }
+}
+
+fn normalize_skill_source(source: &str) -> Result<String, AppError> {
+    let source = source.trim();
+    if source.starts_with("http://") {
+        return Err(AppError::Validation("Use an https URL for skill sources.".into()));
+    }
+
+    if source.starts_with("https://") {
+        if !source
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | '/' | ':' | '@'))
+        {
+            return Err(AppError::Validation("Invalid skill source URL.".into()));
+        }
+        return Ok(source.to_string());
+    }
+
+    normalize_skill_input(source)
+}
+
+fn normalize_skill_name(skill_name: &str) -> Result<String, AppError> {
+    let skill_name = skill_name.trim();
+    if skill_name.is_empty() || skill_name == "." || skill_name.contains('/') || skill_name.contains("..") {
+        return Err(AppError::Validation("Invalid skill name.".into()));
+    }
+
+    normalize_skill_input(skill_name)
+}
+
+trait CommandTimeoutExt {
+    fn status_with_timeout(&mut self, timeout: Duration) -> Result<ExitStatus, AppError>;
+    fn output_with_stream_timeout(&mut self, timeout: Duration, window: tauri::Window, stream_id: String) -> Result<Output, AppError>;
+}
+
+impl CommandTimeoutExt for Command {
+    fn status_with_timeout(&mut self, timeout: Duration) -> Result<ExitStatus, AppError> {
+        let mut child = self
+            .spawn()
+            .map_err(|error| AppError::Filesystem(format!("Could not run npx skills: {error}")))?;
+        let started_at = Instant::now();
+
+        loop {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|error| AppError::Filesystem(format!("Failed while waiting for npx skills: {error}")))?
+            {
+                return Ok(status);
+            }
+
+            if started_at.elapsed() >= timeout {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AppError::Filesystem(
+                    "The installation took too long. Check your internet connection and try again.".into(),
+                ));
+            }
+
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    fn output_with_stream_timeout(&mut self, timeout: Duration, window: tauri::Window, stream_id: String) -> Result<Output, AppError> {
+        let mut child = self
+            .spawn()
+            .map_err(|error| AppError::Filesystem(format!("Could not run opencode: {error}")))?;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let stdout_window = window.clone();
+        let stdout_stream_id = stream_id.clone();
+        let stdout_thread = std::thread::spawn(move || read_stream_pipe(stdout, stdout_window, stdout_stream_id, "stdout"));
+        let stderr_thread = std::thread::spawn(move || read_stream_pipe(stderr, window, stream_id, "stderr"));
+        let started_at = Instant::now();
+
+        loop {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|error| AppError::Filesystem(format!("Failed while waiting for opencode: {error}")))?
+            {
+                let stdout = stdout_thread.join().unwrap_or_default();
+                let stderr = stderr_thread.join().unwrap_or_default();
+                return Ok(Output { status, stdout, stderr });
+            }
+
+            if started_at.elapsed() >= timeout {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                return Err(AppError::Filesystem(
+                    "The chatbot request took too long. Try a smaller prompt or another model.".into(),
+                ));
+            }
+
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+fn read_stream_pipe<T: Read>(pipe: Option<T>, window: tauri::Window, stream_id: String, stream: &str) -> Vec<u8> {
+    let Some(pipe) = pipe else {
+        return vec![];
+    };
+
+    let mut output = Vec::new();
+    let mut reader = BufReader::new(pipe);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                output.extend_from_slice(line.as_bytes());
+                let raw = line.trim_end().to_string();
+                if raw.is_empty() {
+                    continue;
+                }
+                let (kind, text) = classify_agent_chat_line(&raw, stream);
+                emit_agent_chat_event(&window, &stream_id, stream, &kind, &text, &raw);
+            }
+            Err(error) => {
+                emit_agent_chat_event(&window, &stream_id, stream, "error", &format!("Failed to read {stream}: {error}"), "");
+                break;
+            }
+        }
+    }
+    output
+}
+
+fn classify_agent_chat_line(raw: &str, stream: &str) -> (String, String) {
+    if stream == "stderr" {
+        return ("stderr".into(), raw.to_string());
+    }
+
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return ("output".into(), raw.to_string());
+    };
+
+    let type_text = value
+        .get("type")
+        .or_else(|| value.get("event"))
+        .or_else(|| value.get("kind"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_lowercase();
+
+    let extracted = extract_agent_chat_text(&value).unwrap_or_else(|| raw.to_string());
+    if type_text.contains("think") || has_key_recursive(&value, "thinking") || has_key_recursive(&value, "reasoning") {
+        return ("thinking".into(), extracted);
+    }
+    if type_text.contains("tool")
+        || type_text.contains("permission")
+        || type_text.contains("action")
+        || has_key_recursive(&value, "tool")
+        || has_key_recursive(&value, "command")
+    {
+        return ("action".into(), extracted);
+    }
+    if type_text.contains("error") {
+        return ("error".into(), extracted);
+    }
+
+    ("output".into(), extracted)
+}
+
+fn extract_agent_chat_text(value: &Value) -> Option<String> {
+    for key in ["text", "content", "message", "delta", "thinking", "reasoning", "title", "name", "command"] {
+        if let Some(text) = value.get(key).and_then(Value::as_str) {
+            if !text.trim().is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+
+    match value {
+        Value::Array(items) => items.iter().find_map(extract_agent_chat_text),
+        Value::Object(map) => map.values().find_map(extract_agent_chat_text),
+        _ => None,
+    }
+}
+
+fn has_key_recursive(value: &Value, key: &str) -> bool {
+    match value {
+        Value::Object(map) => map.iter().any(|(name, child)| name.eq_ignore_ascii_case(key) || has_key_recursive(child, key)),
+        Value::Array(items) => items.iter().any(|item| has_key_recursive(item, key)),
+        _ => false,
+    }
+}
+
+fn emit_agent_chat_event(window: &tauri::Window, stream_id: &str, stream: &str, kind: &str, text: &str, raw: &str) {
+    let _ = window.emit("agent-chat-event", AgentChatStreamEvent {
+        stream_id: stream_id.to_string(),
+        stream: stream.to_string(),
+        kind: kind.to_string(),
+        text: text.to_string(),
+        raw: raw.to_string(),
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn npx_command() -> Command {
+    Command::new("npx.cmd")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn npx_command() -> Command {
+    Command::new("npx")
 }
 
 #[tauri::command]

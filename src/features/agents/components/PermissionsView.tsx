@@ -9,6 +9,7 @@ import { dedupeEquivalentProfiles } from "../utils/permissionDisplay";
 import { PermissionRulesList } from "./PermissionRulesList";
 import { RawJsonViewer } from "./RawJsonViewer";
 import { PermissionProfileEditorWrapper } from "./PermissionProfileEditor/PermissionProfileEditorWrapper";
+import { isDefaultOpenCodeConfig } from "../utils/defaultConfig";
 
 const knownPermissions = [
   ["read", "Reads files. Defaults allow, with env files denied by OpenCode defaults."],
@@ -64,6 +65,7 @@ export function PermissionsView() {
 
       {visibleProfiles.map((profile) => {
         const linkedAgent = agents.find((agent) => agent.id === profile.agentId);
+        const isReadOnlyDefaultConfig = isDefaultOpenCodeConfig(profile.sourcePath, profile.source);
         return (
           <Card key={profile.id}>
             <div className="section-heading">
@@ -72,7 +74,8 @@ export function PermissionsView() {
                 <Badge tone={profile.kind === "legacyTools" ? "amber" : profile.kind === "effective" ? "blue" : profile.kind === "customProfile" ? "violet" : "slate"}>{profile.kind}</Badge>
                 <SourceBadge source={profile.source} />
                 <RiskBadge risk={profile.risk} />
-                <Button variant="ghost" onClick={() => startEditingProfile(profile)}>
+                {isReadOnlyDefaultConfig ? <Badge tone="amber">read-only</Badge> : null}
+                <Button variant="ghost" onClick={() => startEditingProfile(profile)} disabled={isReadOnlyDefaultConfig} title={isReadOnlyDefaultConfig ? "Default OpenCode config is read-only" : "Edit permission profile"}>
                   <Pencil size={14} /> Edit
                 </Button>
               </span>

@@ -5,6 +5,7 @@ use serde_json::{json, Map, Value};
 
 use crate::errors::AppError;
 use crate::infrastructure::filesystem::path_resolver::PathResolver;
+use crate::infrastructure::opencode::config_parser::stable_id;
 use crate::infrastructure::opencode::config_writer::ConfigWriter;
 use crate::infrastructure::opencode::jsonc_parser::JsoncParser;
 use crate::services::backup_service::BackupService;
@@ -123,26 +124,11 @@ impl SaveService {
 
     pub fn save_agent(&self, agent: &EditableAgent, target_path: &str) -> Result<SaveAgentResult, AppError> {
         let path = expand_home(target_path);
-        let original_name = extract_original_name(&path, &agent.id, &agent.name);
+        ensure_default_opencode_config_is_read_only(&path)?;
 
         let mut config = self.read_config(&path)?;
         let agent_config = self.editable_to_config(agent);
-
-        if let Some(agent_map) = config.get_mut("agent").and_then(Value::as_object_mut) {
-            if agent.name != original_name {
-                agent_map.remove(&original_name);
-            }
-            agent_map.insert(agent.name.clone(), agent_config);
-        } else if let Some(agent_map) = config.get_mut("agents").and_then(Value::as_object_mut) {
-            if agent.name != original_name {
-                agent_map.remove(&original_name);
-            }
-            agent_map.insert(agent.name.clone(), agent_config);
-        } else {
-            let mut map = Map::new();
-            map.insert(agent.name.clone(), agent_config);
-            config["agent"] = Value::Object(map);
-        }
+        upsert_existing_agent_config(&path, &mut config, agent, agent_config)?;
 
         let backup_path = self.backup.create_backup(&path)?;
         self.writer.write(&path, &config)?;
@@ -157,17 +143,11 @@ impl SaveService {
 
     pub fn create_agent(&self, agent: &EditableAgent, target_path: &str) -> Result<SaveAgentResult, AppError> {
         let path = expand_home(target_path);
+        ensure_default_opencode_config_is_read_only(&path)?;
         let mut config = self.read_config(&path).unwrap_or_else(|_| json!({}));
 
         let agent_config = self.editable_to_config(agent);
-
-        if let Some(agent_map) = config.get_mut("agent").and_then(Value::as_object_mut) {
-            agent_map.insert(agent.name.clone(), agent_config);
-        } else {
-            let mut map = Map::new();
-            map.insert(agent.name.clone(), agent_config);
-            config["agent"] = Value::Object(map);
-        }
+        insert_new_agent_config(&path, &mut config, agent, agent_config)?;
 
         let backup_path = self.backup.create_backup(&path)?;
         self.writer.write(&path, &config)?;
@@ -182,11 +162,7 @@ impl SaveService {
 
     pub fn delete_agent(&self, agent_id: &str, config_path: &str) -> Result<(), AppError> {
         let path = expand_home(config_path);
-        if is_default_opencode_config(&path) {
-            return Err(AppError::Validation(
-                "Default OpenCode config agents cannot be deleted.".into(),
-            ));
-        }
+        ensure_default_opencode_config_is_read_only(&path)?;
 
         if path.extension().and_then(|extension| extension.to_str()) == Some("md") {
             return self.delete_config_file(config_path);
@@ -196,7 +172,7 @@ impl SaveService {
 
         for field in ["agent", "agents"] {
             if let Some(agent_map) = config.get_mut(field).and_then(Value::as_object_mut) {
-                agent_map.retain(|name, _| name != agent_id);
+                agent_map.retain(|name, _| name != agent_id && stable_id(&path, name) != agent_id);
             }
         }
 
@@ -208,11 +184,7 @@ impl SaveService {
 
     pub fn delete_config_file(&self, config_path: &str) -> Result<(), AppError> {
         let path = expand_home(config_path);
-        if is_default_opencode_config(&path) {
-            return Err(AppError::Validation(
-                "Default OpenCode config cannot be deleted.".into(),
-            ));
-        }
+        ensure_default_opencode_config_is_read_only(&path)?;
 
         if !path.is_file() {
             return Err(AppError::Validation(format!(
@@ -230,6 +202,7 @@ impl SaveService {
 
     pub fn create_config_file(&self, file_path: &str, agent_name: &str) -> Result<(), AppError> {
         let path = expand_home(file_path);
+        ensure_default_opencode_config_is_read_only(&path)?;
 
         if path.exists() {
             return Err(AppError::Validation(format!(
@@ -258,6 +231,7 @@ impl SaveService {
 
     pub fn save_permission_profile(&self, profile: &EditablePermissionProfile, target_path: &str) -> Result<SaveAgentResult, AppError> {
         let path = expand_home(target_path);
+        ensure_default_opencode_config_is_read_only(&path)?;
         let mut config = self.read_config(&path)?;
 
         let permission_config = self.editable_profile_to_config(profile);
@@ -421,18 +395,467 @@ fn is_default_opencode_config(path: &PathBuf) -> bool {
         .any(|default_path| normalized_path == default_path)
 }
 
-fn extract_original_name(path: &PathBuf, _agent_id: &str, fallback: &str) -> String {
-    let content = std::fs::read_to_string(path).unwrap_or_default();
-    if let Ok(config) = JsoncParser::parse(&content) {
-        for field in ["agent", "agents"] {
-            if let Some(map) = config.get(field).and_then(Value::as_object) {
-                for (name, value) in map {
-                    if value.get("description").is_some() {
-                        return name.clone();
+fn ensure_default_opencode_config_is_read_only(path: &PathBuf) -> Result<(), AppError> {
+    if is_default_opencode_config(path) {
+        return Err(AppError::Validation(
+            "Default OpenCode config is read-only in oc-manager. Create a workflow/config file instead.".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn upsert_existing_agent_config(
+    path: &PathBuf,
+    config: &mut Value,
+    agent: &EditableAgent,
+    agent_config: Value,
+) -> Result<(), AppError> {
+    let target = find_agent_entry(config, path, agent);
+
+    let Some((field, original_name)) = target else {
+        if has_agent_container(config) {
+            return Err(AppError::Validation(format!(
+                "Agent '{}' was not found in {}. Refresh agents before saving.",
+                agent.name,
+                display_config_path(path)
+            )));
+        }
+        return insert_new_agent_config(path, config, agent, agent_config);
+    };
+
+    ensure_agent_name_available(config, path, &agent.name, Some((&field, &original_name)))?;
+
+    let agent_map = config
+        .get_mut(&field)
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| AppError::Parse(format!("Invalid {field} container.")))?;
+
+    if original_name != agent.name {
+        agent_map.remove(&original_name);
+    }
+    agent_map.insert(agent.name.clone(), agent_config);
+
+    Ok(())
+}
+
+fn insert_new_agent_config(
+    path: &PathBuf,
+    config: &mut Value,
+    agent: &EditableAgent,
+    agent_config: Value,
+) -> Result<(), AppError> {
+    ensure_agent_name_available(config, path, &agent.name, None)?;
+
+    let field = preferred_agent_container(config);
+    if config.get(field).is_none() {
+        config[field] = Value::Object(Map::new());
+    }
+
+    let agent_map = config
+        .get_mut(field)
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| AppError::Parse(format!("Invalid {field} container.")))?;
+    agent_map.insert(agent.name.clone(), agent_config);
+
+    Ok(())
+}
+
+fn preferred_agent_container(config: &Value) -> &'static str {
+    if config.get("agent").and_then(Value::as_object).is_some() {
+        "agent"
+    } else if config.get("agents").and_then(Value::as_object).is_some() {
+        "agents"
+    } else {
+        "agent"
+    }
+}
+
+fn has_agent_container(config: &Value) -> bool {
+    ["agent", "agents"]
+        .iter()
+        .any(|field| config.get(*field).and_then(Value::as_object).is_some())
+}
+
+fn find_agent_entry(config: &Value, path: &PathBuf, agent: &EditableAgent) -> Option<(String, String)> {
+    for field in ["agent", "agents"] {
+        let Some(map) = config.get(field).and_then(Value::as_object) else {
+            continue;
+        };
+
+        for name in map.keys() {
+            if stable_id(path, name) == agent.id {
+                return Some((field.to_string(), name.clone()));
+            }
+        }
+    }
+
+    None
+}
+
+fn ensure_agent_name_available(
+    config: &Value,
+    path: &PathBuf,
+    agent_name: &str,
+    allowed_entry: Option<(&str, &str)>,
+) -> Result<(), AppError> {
+    for field in ["agent", "agents"] {
+        let Some(map) = config.get(field).and_then(Value::as_object) else {
+            continue;
+        };
+
+        if !map.contains_key(agent_name) {
+            continue;
+        }
+
+        let is_allowed = allowed_entry
+            .map(|(allowed_field, allowed_name)| {
+                allowed_field == field && allowed_name == agent_name
+            })
+            .unwrap_or(false);
+        if !is_allowed {
+            return Err(AppError::Validation(format!(
+                "Agent '{}' already exists in {}.",
+                agent_name,
+                display_config_path(path)
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn display_config_path(path: &PathBuf) -> String {
+    path.to_string_lossy().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn save_agent_updates_only_matching_agent_in_shared_agent_file() {
+        let path = temp_config_path("save-shared-agent");
+        fs::write(
+            &path,
+            r#"{
+              "agent": {
+                "alpha": { "description": "Keep me", "mode": "subagent", "model": "openai/gpt-4.1", "prompt": "alpha" },
+                "beta": { "description": "Old beta", "mode": "subagent", "model": "openai/gpt-4.1", "prompt": "beta" }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let service = SaveService::new();
+        let agent = editable_agent(&path, "beta", "Updated beta");
+        service.save_agent(&agent, &path.to_string_lossy()).unwrap();
+
+        let config = read_json(&path);
+        let agents = config.get("agent").and_then(Value::as_object).unwrap();
+        assert_eq!(agents.len(), 2);
+        assert_eq!(
+            agents.get("alpha").unwrap().get("description"),
+            Some(&json!("Keep me"))
+        );
+        assert_eq!(
+            agents.get("beta").unwrap().get("description"),
+            Some(&json!("Updated beta"))
+        );
+
+        cleanup_temp_config(&path);
+    }
+
+    #[test]
+    fn create_agent_uses_existing_agents_container_without_dropping_entries() {
+        let path = temp_config_path("create-agents-container");
+        fs::write(
+            &path,
+            r#"{
+              "agents": {
+                "alpha": { "description": "Keep me", "mode": "subagent", "model": "openai/gpt-4.1", "prompt": "alpha" }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let service = SaveService::new();
+        let agent = editable_agent(&path, "beta", "New beta");
+        service.create_agent(&agent, &path.to_string_lossy()).unwrap();
+
+        let config = read_json(&path);
+        assert!(config.get("agent").is_none());
+        let agents = config.get("agents").and_then(Value::as_object).unwrap();
+        assert_eq!(agents.len(), 2);
+        assert!(agents.contains_key("alpha"));
+        assert!(agents.contains_key("beta"));
+
+        cleanup_temp_config(&path);
+    }
+
+    #[test]
+    fn save_agent_updates_existing_agents_container() {
+        let path = temp_config_path("save-agents-container");
+        fs::write(
+            &path,
+            r#"{
+              "agents": {
+                "alpha": { "description": "Keep me", "mode": "subagent", "model": "openai/gpt-4.1", "prompt": "alpha" },
+                "beta": { "description": "Old beta", "mode": "subagent", "model": "openai/gpt-4.1", "prompt": "beta" }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let service = SaveService::new();
+        let agent = editable_agent(&path, "beta", "Updated beta");
+        service.save_agent(&agent, &path.to_string_lossy()).unwrap();
+
+        let config = read_json(&path);
+        assert!(config.get("agent").is_none());
+        let agents = config.get("agents").and_then(Value::as_object).unwrap();
+        assert_eq!(agents.len(), 2);
+        assert_eq!(
+            agents.get("alpha").unwrap().get("description"),
+            Some(&json!("Keep me"))
+        );
+        assert_eq!(
+            agents.get("beta").unwrap().get("description"),
+            Some(&json!("Updated beta"))
+        );
+
+        cleanup_temp_config(&path);
+    }
+
+    #[test]
+    fn save_agent_renames_matching_agent_without_leaving_stale_entry() {
+        let path = temp_config_path("rename-agent");
+        fs::write(
+            &path,
+            r#"{
+              "agent": {
+                "alpha": { "description": "Keep me", "mode": "subagent", "model": "openai/gpt-4.1", "prompt": "alpha" },
+                "beta": { "description": "Old beta", "mode": "subagent", "model": "openai/gpt-4.1", "prompt": "beta" }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let service = SaveService::new();
+        let mut agent = editable_agent(&path, "beta", "Renamed beta");
+        agent.name = "gamma".into();
+        service.save_agent(&agent, &path.to_string_lossy()).unwrap();
+
+        let config = read_json(&path);
+        let agents = config.get("agent").and_then(Value::as_object).unwrap();
+        assert_eq!(agents.len(), 2);
+        assert!(agents.contains_key("alpha"));
+        assert!(!agents.contains_key("beta"));
+        assert_eq!(
+            agents.get("gamma").unwrap().get("description"),
+            Some(&json!("Renamed beta"))
+        );
+
+        cleanup_temp_config(&path);
+    }
+
+    #[test]
+    fn save_agent_refuses_rename_over_existing_agent() {
+        let path = temp_config_path("rename-duplicate-agent");
+        fs::write(
+            &path,
+            r#"{
+              "agent": {
+                "alpha": { "description": "Keep me", "mode": "subagent", "model": "openai/gpt-4.1", "prompt": "alpha" },
+                "beta": { "description": "Old beta", "mode": "subagent", "model": "openai/gpt-4.1", "prompt": "beta" }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let service = SaveService::new();
+        let mut agent = editable_agent(&path, "beta", "Would overwrite alpha");
+        agent.id = stable_id(&path, "beta");
+        agent.name = "alpha".into();
+
+        let error = service.save_agent(&agent, &path.to_string_lossy()).unwrap_err();
+        assert!(matches!(error, AppError::Validation(_)));
+
+        let config = read_json(&path);
+        let agents = config.get("agent").and_then(Value::as_object).unwrap();
+        assert_eq!(agents.len(), 2);
+        assert_eq!(
+            agents.get("alpha").unwrap().get("description"),
+            Some(&json!("Keep me"))
+        );
+        assert_eq!(
+            agents.get("beta").unwrap().get("description"),
+            Some(&json!("Old beta"))
+        );
+
+        cleanup_temp_config(&path);
+    }
+
+    #[test]
+    fn save_agent_refuses_stale_id_instead_of_overwriting_by_name() {
+        let path = temp_config_path("stale-id-agent");
+        fs::write(
+            &path,
+            r#"{
+              "agent": {
+                "alpha": { "description": "Keep me", "mode": "subagent", "model": "openai/gpt-4.1", "prompt": "alpha" }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let service = SaveService::new();
+        let mut agent = editable_agent(&path, "alpha", "Would overwrite alpha");
+        agent.id = "stale-id".into();
+
+        let error = service.save_agent(&agent, &path.to_string_lossy()).unwrap_err();
+        assert!(matches!(error, AppError::Validation(_)));
+
+        let config = read_json(&path);
+        let agents = config.get("agent").and_then(Value::as_object).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(
+            agents.get("alpha").unwrap().get("description"),
+            Some(&json!("Keep me"))
+        );
+
+        cleanup_temp_config(&path);
+    }
+
+    #[test]
+    fn create_agent_refuses_duplicate_name() {
+        let path = temp_config_path("create-duplicate-agent");
+        fs::write(
+            &path,
+            r#"{
+              "agent": {
+                "alpha": { "description": "Keep me", "mode": "subagent", "model": "openai/gpt-4.1", "prompt": "alpha" }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let service = SaveService::new();
+        let agent = editable_agent(&path, "alpha", "Duplicate");
+
+        let error = service.create_agent(&agent, &path.to_string_lossy()).unwrap_err();
+        assert!(matches!(error, AppError::Validation(_)));
+
+        let config = read_json(&path);
+        let agents = config.get("agent").and_then(Value::as_object).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(
+            agents.get("alpha").unwrap().get("description"),
+            Some(&json!("Keep me"))
+        );
+
+        cleanup_temp_config(&path);
+    }
+
+    #[test]
+    fn delete_agent_removes_only_matching_id() {
+        let path = temp_config_path("delete-agent");
+        fs::write(
+            &path,
+            r#"{
+              "agent": {
+                "alpha": { "description": "Keep me", "mode": "subagent", "model": "openai/gpt-4.1", "prompt": "alpha" },
+                "beta": { "description": "Delete me", "mode": "subagent", "model": "openai/gpt-4.1", "prompt": "beta" }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let service = SaveService::new();
+        service
+            .delete_agent(&stable_id(&path, "beta"), &path.to_string_lossy())
+            .unwrap();
+
+        let config = read_json(&path);
+        let agents = config.get("agent").and_then(Value::as_object).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert!(agents.contains_key("alpha"));
+        assert!(!agents.contains_key("beta"));
+
+        cleanup_temp_config(&path);
+    }
+
+    fn editable_agent(path: &PathBuf, name: &str, description: &str) -> EditableAgent {
+        EditableAgent {
+            id: stable_id(path, name),
+            name: name.into(),
+            description: description.into(),
+            enabled: true,
+            mode: "subagent".into(),
+            provider: "openai".into(),
+            model: "gpt-4.1".into(),
+            variant: None,
+            temperature: 0.2,
+            top_p: None,
+            steps: 25,
+            prompt: "prompt".into(),
+            simple_permissions: Map::new(),
+            bash_policy: BashPolicy {
+                default: "ask".into(),
+                rules: vec![],
+            },
+            task_policy: TaskPolicy {
+                default: "ask".into(),
+                rules: vec![],
+            },
+            workspace_scope: WorkspaceScope {
+                allowed_paths: vec![],
+                denied_paths: vec![],
+            },
+            approval_policy: ApprovalPolicy {
+                require_plan_before_edit: false,
+                require_user_approval_before_edit: false,
+                require_user_approval_before_bash: false,
+                require_user_approval_before_install: false,
+                require_user_approval_before_delete: false,
+                require_user_approval_before_git_push: false,
+            },
+            permission_profile: None,
+            source_path: path.to_string_lossy().to_string(),
+            version: 1,
+        }
+    }
+
+    fn temp_config_path(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("oc-manager-{name}-{unique}.json"))
+    }
+
+    fn read_json(path: &PathBuf) -> Value {
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn cleanup_temp_config(path: &PathBuf) {
+        let _ = fs::remove_file(path);
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default();
+        if let Some(parent) = path.parent() {
+            if let Ok(entries) = fs::read_dir(parent) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with(&format!("{stem}_backup_")) {
+                        let _ = fs::remove_file(entry.path());
                     }
                 }
             }
         }
     }
-    fallback.to_string()
 }

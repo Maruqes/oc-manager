@@ -78,7 +78,7 @@ function parseProviderModel(model: string | undefined): { provider: ProviderId; 
 
   const providerRaw = trimmed.slice(0, slashIndex).toLowerCase();
   const modelPart = trimmed.slice(slashIndex + 1);
-  const known: ProviderId[] = ["openai", "anthropic", "gemini", "ollama", "lmstudio", "opencode-go"];
+  const known: ProviderId[] = ["openai", "anthropic", "gemini", "ollama", "lmstudio", "opencode-go", "opencode"];
   const provider = known.includes(providerRaw as ProviderId) ? (providerRaw as ProviderId) : "custom";
   return { provider, model: modelPart };
 }

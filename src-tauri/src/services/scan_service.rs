@@ -49,7 +49,7 @@ impl ScanService {
                     if is_likely_opencode_path(&candidate.path) {
                         result.agents.push(self.parser.parse_error_agent(
                             &candidate,
-                            format!("Não foi possível ler o ficheiro: {error}"),
+                            format!("Could not read the file: {error}"),
                             last_modified,
                         ));
                     }
@@ -75,7 +75,7 @@ impl ScanService {
         let parsed = if is_markdown {
             Ok(MarkdownAgentParser::parse(content))
         } else {
-            JsoncParser::parse(content).map_err(|error| format!("JSON/JSONC inválido: {error}"))
+            JsoncParser::parse(content).map_err(|error| format!("Invalid JSON/JSONC: {error}"))
         };
 
         match parsed {

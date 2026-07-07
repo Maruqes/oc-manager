@@ -1,54 +1,54 @@
-# Arquitetura
+# Architecture
 
-## Objetivo
+## Goal
 
-Manter uma codebase fácil de navegar, com fronteiras claras entre UI, domínio, serviços e infraestrutura.
+Keep the codebase easy to navigate, with clear boundaries between UI, domain, services, and infrastructure.
 
 ## Frontend: `src/`
 
-- `app/`: inicialização da aplicação.
-- `layouts/`: composição visual macro.
-- `pages/`: páginas que ligam features.
-- `features/agents/`: tudo que é específico de agentes.
-- `components/ui/`: primitivos visuais reutilizáveis.
-- `components/common/`: componentes comuns com alguma semântica.
-- `styles/`: tema global.
+- `app/`: application bootstrap.
+- `layouts/`: high-level visual composition.
+- `pages/`: pages that connect features.
+- `features/agents/`: everything specific to agents.
+- `components/ui/`: reusable visual primitives.
+- `components/common/`: shared semantic components.
+- `styles/`: global theme.
 
-Regra: componentes genéricos não importam features.
+Rule: generic components must not import features.
 
 ## Backend: `src-tauri/src/`
 
-- `commands/`: camada fina Tauri, sem regra de negócio.
-- `domain/`: tipos e conceitos centrais.
-- `services/`: casos de uso e orquestração.
-- `infrastructure/`: filesystem, parsing, descoberta de configs OpenCode.
-- `errors/`: erro unificado para frontend.
-- `config/`: configuração da aplicação.
-- `utils/`: helpers pequenos e puros.
+- `commands/`: thin Tauri layer, no business logic.
+- `domain/`: core types and concepts.
+- `services/`: use cases and orchestration.
+- `infrastructure/`: filesystem, parsing, OpenCode config discovery.
+- `errors/`: unified error type for the frontend.
+- `config/`: application configuration.
+- `utils/`: small pure helpers.
 
-Regra de dependência:
+Dependency rule:
 
 ```txt
 commands -> services -> domain
 services -> infrastructure
-domain -> nada externo
+domain -> nothing external
 ```
 
-## Fluxo scan
+## Scan Flow
 
 ```txt
 UI -> agentsApi.scanAgents -> Tauri command -> ScanService -> ConfigDiscovery/FsRepository/JsoncParser/MarkdownAgentParser/ConfigParser -> ScanResult
 ```
 
-O backend retorna apenas dados reais encontrados no filesystem. O mock é restrito ao frontend em modo browser/Vite.
+The backend only returns real data found on the filesystem. The mock is restricted to the frontend when running in browser/Vite mode.
 
 ## ScanResult
 
-O scanner retorna:
+The scanner returns:
 
-- `agents`: agentes normalizados.
-- `permissionProfiles`: perfis derivados do modelo real do OpenCode (`permission`, overrides, `tools` legado e effective permissions).
-- `instructionSources`: prompts, referências `{file:...}`, `instructions` e markdown bodies.
-- `configFiles`: ficheiros descobertos com raw config e contadores.
+- `agents`: normalized agents.
+- `permissionProfiles`: profiles derived from the real OpenCode model (`permission`, overrides, legacy `tools`, and effective permissions).
+- `instructionSources`: prompts, `{file:...}` references, `instructions`, and markdown bodies.
+- `configFiles`: discovered files with raw config and counters.
 
-O discovery é amplo (`json/jsonc/md` recursivo), mas o resultado é filtrado: ficheiros aleatórios só são lidos como candidatos e não aparecem na UI se não tiverem estrutura de agente/config OpenCode.
+Discovery is broad and recursive across `json/jsonc/md`, but the result is filtered. Random files are only read as candidates and do not appear in the UI unless they contain an OpenCode agent/config structure.

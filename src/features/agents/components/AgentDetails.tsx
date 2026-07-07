@@ -21,6 +21,7 @@ import { WorkspaceScopeView } from "./Views/WorkspaceScopeView";
 import { ApprovalPolicyView } from "./Views/ApprovalPolicyView";
 import { SimplePermissionsView } from "./Views/SimplePermissionsView";
 import { PermissionProfileEditorWrapper } from "./PermissionProfileEditor/PermissionProfileEditorWrapper";
+import { isDefaultOpenCodeConfig } from "../utils/defaultConfig";
 
 export function AgentDetails() {
   const agent = useSelectedAgent();
@@ -75,6 +76,7 @@ export function AgentDetails() {
     return <Card className="empty-state">Select an agent to start.</Card>;
   }
 
+  const isReadOnlyDefaultConfig = isDefaultOpenCodeConfig(agent.sourcePath, agent.source);
   const agentProfiles = permissionProfiles.filter((profile) => isPermissionProfileRelatedToAgent(profile, agent));
   const agentInstructionSources = instructionSources.filter((source) => isInstructionSourceRelatedToAgent(source, agent));
 
@@ -87,7 +89,7 @@ export function AgentDetails() {
           <p>{agent.description}</p>
         </div>
         <div className="hero-actions">
-          <Button variant="primary" onClick={() => startEditing(agent)}>
+          <Button variant="primary" onClick={() => startEditing(agent)} disabled={isReadOnlyDefaultConfig} title={isReadOnlyDefaultConfig ? "Default OpenCode config is read-only" : "Edit agent"}>
             <Pencil size={15} /> Edit
           </Button>
         </div>
@@ -97,6 +99,7 @@ export function AgentDetails() {
         <Badge tone={agent.type === "primary" ? "violet" : agent.type === "subagent" ? "green" : "slate"}>{getAgentTypeLabel(agent.type)}</Badge>
         {agent.disabled ? <Badge tone="red">disabled</Badge> : null}
         {agent.hidden ? <Badge tone="amber">hidden</Badge> : null}
+        {isReadOnlyDefaultConfig ? <Badge tone="amber">read-only default config</Badge> : null}
         <SourceBadge source={agent.source} />
         <RiskBadge risk={agent.risk} />
       </div>

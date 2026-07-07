@@ -72,7 +72,7 @@ impl ConfigParser {
         {
             agents.push(self.empty_config_agent(
                 candidate,
-                "Configuração contém bloco de agentes, mas nenhum agente reconhecido.".into(),
+                "Configuration contains an agent block, but no agent was recognized.".into(),
                 last_modified,
             ));
         }
@@ -90,7 +90,7 @@ impl ConfigParser {
             .path
             .file_stem()
             .and_then(|file_name| file_name.to_str())
-            .unwrap_or("config-invalida")
+            .unwrap_or("invalid-config")
             .to_string();
 
         Agent {
@@ -99,7 +99,7 @@ impl ConfigParser {
             agent_type: AgentType::Unknown,
             source: candidate.source,
             source_path: display_path(&candidate.path),
-            description: Some("Configuração encontrada, mas não foi possível fazer parse.".into()),
+            description: Some("Configuration found, but it could not be parsed.".into()),
             model: None,
             effective_model: None,
             model_source: None,
@@ -329,7 +329,7 @@ impl ConfigParser {
             .path
             .file_stem()
             .and_then(|file_name| file_name.to_str())
-            .unwrap_or("config-sem-agentes")
+            .unwrap_or("config-without-agents")
             .to_string();
 
         Agent {
@@ -338,7 +338,7 @@ impl ConfigParser {
             agent_type: AgentType::Unknown,
             source: candidate.source,
             source_path: display_path(&candidate.path),
-            description: Some("Configuração encontrada, mas sem agentes reconhecidos.".into()),
+            description: Some("Configuration found, but no agents were recognized.".into()),
             model: None,
             effective_model: None,
             model_source: None,
@@ -384,7 +384,7 @@ impl ConfigParser {
                 .map(|profiles| profiles.contains_key(profile_name))
                 .unwrap_or(false);
             if !exists {
-                validation_errors.push(format!("Perfil de permissões não encontrado: {profile_name}."));
+                validation_errors.push(format!("Permission profile not found: {profile_name}."));
             }
         }
 
@@ -719,15 +719,15 @@ fn validate_agent_value(name: &str, value: &Value) -> Vec<String> {
     let mut errors = Vec::new();
 
     if name.trim().is_empty() {
-        errors.push("Agente sem nome.".into());
+        errors.push("Agent has no name.".into());
     }
 
     if get_string(value, &["model"]).is_none() {
-        errors.push("Modelo não definido.".into());
+        errors.push("Model is not defined.".into());
     }
 
     if get_prompt_text(value).is_none() {
-        errors.push("Instruções não definidas.".into());
+        errors.push("Instructions are not defined.".into());
     }
 
     errors
@@ -779,7 +779,7 @@ fn has_explicit_agent_hint(object: &Map<String, Value>) -> bool {
     .any(|field| object.contains_key(*field))
 }
 
-fn stable_id(path: &Path, name: &str) -> String {
+pub(crate) fn stable_id(path: &Path, name: &str) -> String {
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let raw = format!("{}::{name}", canonical.display());
     let normalized = raw
@@ -916,6 +916,6 @@ mod tests {
         assert!(agents[0]
             .validation_errors
             .iter()
-            .any(|error| error.contains("Perfil de permissões não encontrado")));
+            .any(|error| error.contains("Permission profile not found")));
     }
 }

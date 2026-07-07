@@ -1,76 +1,77 @@
-# Makefile para OpenCode Agent Manager
-# Gestor desktop de agentes OpenCode (Tauri + React + TypeScript + Rust)
+# Makefile for OpenCode Agent Manager
+# Desktop manager for OpenCode agents (Tauri + React + TypeScript + Rust)
 
-# Configuração
+# Configuration
 .PHONY: help install dev tauri-dev tauri-build executable build check fmt lint test clean reset
 
 help:
-	@echo "Comandos disponíveis:"
-	@echo "  make install      Instala dependências npm e crates"
-	@echo "  make dev          Inicia o frontend Vite standalone"
-	@echo "  make tauri-dev    Inicia a aplicação Tauri em modo desenvolvimento"
-	@echo "  make build        Compila o frontend"
-	@echo "  make tauri-build  Compila o binário desktop Tauri"
-	@echo "  make executable   Cria ./bin/opencode-agent-manager"
-	@echo "  make check        Verifica tipos TypeScript e metadados Rust"
-	@echo "  make fmt          Formata código Rust e TypeScript (se disponível)"
-	@echo "  make lint         Executa lint básico"
-	@echo "  make test         Executa testes disponíveis"
-	@echo "  make clean        Remove node_modules, dist e target"
-	@echo "  make reset        Limpa tudo e reinstala"
+	@echo "Available commands:"
+	@echo "  make install      Install npm dependencies and Rust crates"
+	@echo "  make dev          Start the standalone Vite frontend"
+	@echo "  make tauri-dev    Start the Tauri app in development mode"
+	@echo "  make build        Build the frontend"
+	@echo "  make tauri-build  Build the Tauri desktop binary"
+	@echo "  make executable   Create ./bin/opencode-agent-manager"
+	@echo "  make check        Check TypeScript types and Rust metadata"
+	@echo "  make fmt          Format Rust and TypeScript code when available"
+	@echo "  make lint         Run basic lint checks"
+	@echo "  make test         Run available tests"
+	@echo "  make clean        Remove node_modules, dist, and target"
+	@echo "  make reset        Clean everything and reinstall"
 
 install:
-	@echo "==> A instalar dependências npm..."
+	@echo "==> Installing npm dependencies..."
 	npm install
-	@echo "==> A instalar crates Rust..."
+	@echo "==> Installing Rust crates..."
 	cd src-tauri && cargo fetch
 
 dev:
-	@echo "==> A iniciar Vite dev server..."
+	@echo "==> Starting Vite dev server..."
 	npm run dev
 
 tauri-dev:
-	@echo "==> A iniciar Tauri em modo desenvolvimento..."
+	@echo "==> Starting Tauri in development mode..."
 	npm run tauri dev
 
 build:
-	@echo "==> A compilar frontend..."
+	@echo "==> Building frontend..."
 	npm run build
 
 tauri-build:
-	@echo "==> A compilar binário Tauri..."
-	npm run tauri build
+	@echo "==> Building Tauri binary..."
+	npm run tauri -- build
 
-executable: build
-	@echo "==> A criar executável em ./bin/opencode-agent-manager..."
-	cd src-tauri && cargo build --release
+executable:
+	@echo "==> Creating executable at ./bin/opencode-agent-manager..."
+	npm run tauri -- build --no-bundle
 	mkdir -p bin
-	cp src-tauri/target/release/opencode-agent-manager bin/opencode-agent-manager
-	chmod +x bin/opencode-agent-manager
+	cp src-tauri/target/release/opencode-agent-manager bin/opencode-agent-manager-bin
+	printf '%s\n' '#!/usr/bin/env sh' 'set -eu' '' 'APP_DIR=$$(CDPATH= cd -- "$$(dirname -- "$$0")" && pwd)' 'export WEBKIT_DISABLE_DMABUF_RENDERER="$${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"' 'exec "$$APP_DIR/opencode-agent-manager-bin" "$$@"' > bin/opencode-agent-manager
+	chmod +x bin/opencode-agent-manager bin/opencode-agent-manager-bin
 
 check:
-	@echo "==> A verificar TypeScript..."
+	@echo "==> Checking TypeScript..."
 	npx tsc --noEmit
-	@echo "==> A verificar metadados Rust..."
+	@echo "==> Checking Rust metadata..."
 	cd src-tauri && cargo metadata --no-deps --format-version 1 > /dev/null
 
 fmt:
-	@echo "==> A formatar Rust..."
+	@echo "==> Formatting Rust..."
 	cd src-tauri && cargo fmt || true
-	@echo "==> A formatar TypeScript..."
+	@echo "==> Formatting TypeScript..."
 	npx prettier --write "src/**/*.{ts,tsx}" "shared/**/*.{ts,tsx}" || true
 
 lint:
-	@echo "==> A executar lint TypeScript..."
+	@echo "==> Running TypeScript lint..."
 	npx tsc --noEmit
 
 clean:
-	@echo "==> A remover artefactos de build..."
+	@echo "==> Removing build artifacts..."
 	rm -rf node_modules dist src-tauri/target
 
 test:
-	@echo "==> A executar testes Rust..."
+	@echo "==> Running Rust tests..."
 	cd src-tauri && cargo test
 
 reset: clean install
-	@echo "==> Ambiente reposto."
+	@echo "==> Environment reset."

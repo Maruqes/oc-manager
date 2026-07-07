@@ -12,6 +12,7 @@ import type { AgentFilter } from "../utils/agentFilters";
 import { createConfigFile, deleteAgent, deleteConfigFile, scanAgents } from "../api/agentsApi";
 import { CreateAgentModal } from "./modals/CreateAgentModal";
 import { CreateConfigFileModal } from "./modals/CreateConfigFileModal";
+import { isDefaultOpenCodeConfig } from "../utils/defaultConfig";
 
 const filters: Array<{ label: string; value: AgentFilter }> = [
   { label: "All", value: "any" },
@@ -21,16 +22,13 @@ const filters: Array<{ label: string; value: AgentFilter }> = [
   { label: "Unknown", value: "unknown" },
 ];
 
-function isDefaultOpenCodeConfig(sourcePath: string, source: string) {
-  if (source !== "global") return false;
-
-  const normalizedPath = sourcePath.replace(/\\/g, "/");
-  return /(^~\/\.config\/opencode|\/\.config\/opencode|\/opencode)\/opencode\.jsonc?$/.test(normalizedPath);
-}
-
 export function AgentSidebar() {
   const { agents, selectedAgentId, filter, search, setFilter, setSearch, selectAgent, isLoading, error, scanProjectRoot, setScanResult, setLoading, setError, startCreatingFromFile } = useAgentsStore();
-  const visibleAgents = filterAgents(agents, filter, search);
+  const visibleAgents = filterAgents(
+    agents.filter((agent) => !isDefaultOpenCodeConfig(agent.sourcePath, agent.source)),
+    filter,
+    search,
+  );
   const grouped = useMemo(() => groupAgentsByFile(visibleAgents), [visibleAgents]);
 
   const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
@@ -193,9 +191,10 @@ export function AgentSidebar() {
                 <button
                   type="button"
                   className="file-add-button"
-                  title={`Add agent to ${shortenPath(group.sourcePath)}`}
+                  title={isDefaultConfig ? "Default OpenCode config is read-only" : `Add agent to ${shortenPath(group.sourcePath)}`}
                   onClick={() => setCreateAgentTarget(group.sourcePath)}
-                  aria-label={`Add agent to ${shortenPath(group.sourcePath)}`}
+                  aria-label={isDefaultConfig ? "Default OpenCode config is read-only" : `Add agent to ${shortenPath(group.sourcePath)}`}
+                  disabled={isDefaultConfig}
                 >
                   <Plus size={14} />
                 </button>

@@ -1,46 +1,46 @@
 # MVP
 
-## Sprint 1: base navegável
+## Sprint 1: Navigable Base
 
-- Skeleton Tauri + React + TypeScript.
-- Layout dark premium com sidebar, painel principal e painel de estado.
-- Lista de agentes mockados.
-- Filtros por tipo.
-- Seleção de agente.
-- Visualização de modelo, origem, permissões, instruções e risco.
-- Backend Rust já separado por camadas e command `scan_agents`.
+- Tauri + React + TypeScript skeleton.
+- Premium dark layout with sidebar, main panel, and status panel.
+- Mocked agent list.
+- Type filters.
+- Agent selection.
+- Model, source, permissions, instructions, and risk display.
+- Rust backend already split into layers with the `scan_agents` command.
 
-## Sprint 2: scanner real
+## Sprint 2: Real Scanner
 
-- Descobrir `.opencode/`, `opencode.json`, `opencode.jsonc`, `$XDG_CONFIG_HOME/opencode` e `~/.config/opencode/`.
-- Aceitar `projectRoot` no command Tauri `scan_agents` para permitir selecionar a raiz do projeto pela UI.
-- Ler recursivamente ficheiros `.json`, `.jsonc` e `.md` até 8 níveis de profundidade, ignorando pastas óbvias como `node_modules`, `target`, `dist`, `.git`, caches, logs e estado/sessões.
-- Manter no resultado apenas ficheiros com sinais reais de agente/config OpenCode para evitar confundir JSON/Markdown aleatório com agentes.
-- Não tratar qualquer `docs/agents/*.md` como agente automaticamente; Markdown precisa de frontmatter/sinais de agente.
-- Parsear JSON/JSONC com suporte MVP a comentários e vírgulas finais.
-- Normalizar configs com `agent`, `agents` ou ficheiros individuais dentro de `agents/` para `AgentDto`.
-- Calcular risco básico a partir de permissões/ferramentas.
-- Mostrar configs inválidas como agentes `unknown` com erro de validação.
+- Discover `.opencode/`, `opencode.json`, `opencode.jsonc`, `$XDG_CONFIG_HOME/opencode`, and `~/.config/opencode/`.
+- Accept `projectRoot` in the `scan_agents` Tauri command so the UI can choose the project root.
+- Recursively read `.json`, `.jsonc`, and `.md` files up to 8 levels deep, ignoring obvious folders such as `node_modules`, `target`, `dist`, `.git`, caches, logs, state, and sessions.
+- Keep only files with real OpenCode agent/config signals to avoid confusing random JSON/Markdown with agents.
+- Do not automatically treat every `docs/agents/*.md` file as an agent. Markdown needs frontmatter or agent signals.
+- Parse JSON/JSONC with MVP support for comments and trailing commas.
+- Normalize configs with `agent`, `agents`, or individual files under `agents/` into `AgentDto`.
+- Calculate basic risk from permissions/tools.
+- Show invalid configs as `unknown` agents with validation errors.
 
-Estado: implementado. O fallback mock existe apenas no frontend quando a app corre fora do runtime Tauri.
+Status: implemented. The mock fallback only exists in the frontend when the app runs outside the Tauri runtime.
 
-## Sprint 3: edição segura
+## Sprint 3: Safe Editing
 
-Antes da edição, foi adicionado um sprint de visualização completa:
+A full-visibility sprint was added before editing:
 
-- `scan_agents` retorna `ScanResult` em vez de apenas `Agent[]`.
-- `ScanResult` inclui agentes, permission profiles derivados, fontes de instruções e ficheiros de config.
-- UI tem abas: `Agents`, `Permissions`, `Instructions`, `Config Files`, `Raw`.
-- `Permission Profiles` são derivados de `permission`, overrides por agente, `tools` legado e permissões efetivas.
-- Agentes Markdown em `agents/*.md` são suportados no scanner MVP.
+- `scan_agents` returns `ScanResult` instead of only `Agent[]`.
+- `ScanResult` includes agents, derived permission profiles, instruction sources, and config files.
+- UI has tabs: `Agents`, `Permissions`, `Instructions`, `Config Files`, `Raw`.
+- `Permission Profiles` are derived from `permission`, agent overrides, legacy `tools`, and effective permissions.
+- Markdown agents in `agents/*.md` are supported by the MVP scanner.
 
-- Editar modelo, descrição e instruções.
-- Validar antes de guardar.
-- Criar backup automático.
-- Detectar conflitos por `lastModified` ou hash.
+- Edit model, description, and instructions.
+- Validate before saving.
+- Create automatic backups.
+- Detect conflicts via `lastModified` or hash.
 
-## Sprint 4: permissões e raw editor
+## Sprint 4: Permissions And Raw Editor
 
-- Editor visual de permissões.
-- Classificação de risco melhorada.
-- Editor raw JSON/JSONC.
+- Visual permission editor.
+- Improved risk classification.
+- Raw JSON/JSONC editor.

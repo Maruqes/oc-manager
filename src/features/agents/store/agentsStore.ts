@@ -10,7 +10,7 @@ function generateId(): string {
   return `new-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function createEmptyEditableAgent(sourcePath: string): EditableAgent {
+export function createEmptyEditableAgent(sourcePath: string): EditableAgent {
   const now = new Date().toISOString();
   return {
     id: generateId(),
