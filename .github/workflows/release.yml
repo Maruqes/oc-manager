@@ -63,9 +63,25 @@ jobs:
 
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          for attempt in 1 2 3; do
+            if sudo apt-get -o Acquire::Retries=3 update; then
+              exit_code=0
+              break
+            fi
+            exit_code=$?
+            sleep $((attempt * 10))
+          done
+          exit ${exit_code:-1}
+
+      - name: Install Linux Tauri packages
+        if: runner.os == 'Linux'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get -o Acquire::Retries=3 install -y \
             build-essential \
             curl \
             file \
@@ -88,6 +104,11 @@ jobs:
       - name: Add Rust target
         if: matrix.target != ''
         run: rustup target add ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
 
       - name: Install frontend dependencies
         run: npm ci
