@@ -1,24 +1,35 @@
 # OpenCode Agent Manager
 
-Desktop application for visually managing OpenCode agents.
+Desktop app for managing OpenCode agents.
 
-## Stack
-
-- Tauri v2
-- React + TypeScript + Vite
-- Zustand
-- CSS modular simples no MVP, preparado para migrar/adicionar Tailwind + shadcn/ui
-
-## Development
+## Build The Executable
 
 ```bash
-npm install
-npm run tauri dev
+make executable
 ```
 
-## Structure
+This builds the app and creates:
 
-- `src/`: frontend
-- `src-tauri/`: backend Rust/Tauri
-- `shared/`: contratos/tipos documentados
-- `docs/`: architecture and MVP documentation
+```bash
+./bin/opencode-agent-manager
+```
+
+Run the app with:
+
+```bash
+./bin/opencode-agent-manager
+```
+
+## Install The OpenCode Loader
+
+```bash
+make install-oc
+```
+
+This installs a global OpenCode plugin that loads every JSON workflow in:
+
+```bash
+~/.config/opencode/workflows/*.json
+```
+
+Restart OpenCode after running this command so the agents appear.

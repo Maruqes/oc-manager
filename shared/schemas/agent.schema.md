@@ -1,16 +1,16 @@
 # Agent DTO Schema
 
-Contrato manual do MVP entre frontend e backend.
+Manual MVP contract between the frontend and backend.
 
 - `id`: stable unique identifier.
 - `name`: visible agent name.
-- `type`: `primary`, `subagent` ou `unknown`.
-- `source`: `project` ou `global`.
+- `type`: `primary`, `subagent`, or `unknown`.
+- `source`: `project` or `global`.
 - `sourcePath`: source file path.
 - `model`: model used by the agent.
 - `instructions`: instructions/system prompt.
 - `permissions`: normalized permissions with calculated risk.
 - `rawConfig`: original configuration.
-- `risk`: risco agregado.
-- `validationErrors`: erros que bloqueiam ou avisam antes de guardar.
-- `lastModified`: timestamp usado para detectar conflitos.
+- `risk`: aggregated risk.
+- `validationErrors`: errors that block or warn before saving.
+- `lastModified`: timestamp used to detect conflicts.

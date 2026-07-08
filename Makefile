@@ -2,11 +2,12 @@
 # Desktop manager for OpenCode agents (Tauri + React + TypeScript + Rust)
 
 # Configuration
-.PHONY: help install dev tauri-dev tauri-build executable build check fmt lint test clean reset
+.PHONY: help install install-oc dev tauri-dev tauri-build executable build check fmt lint test clean reset
 
 help:
 	@echo "Available commands:"
 	@echo "  make install      Install npm dependencies and Rust crates"
+	@echo "  make install-oc   Install OpenCode workflows loader"
 	@echo "  make dev          Start the standalone Vite frontend"
 	@echo "  make tauri-dev    Start the Tauri app in development mode"
 	@echo "  make build        Build the frontend"
@@ -24,6 +25,10 @@ install:
 	npm install
 	@echo "==> Installing Rust crates..."
 	cd src-tauri && cargo fetch
+
+install-oc:
+	@echo "==> Installing OpenCode workflows loader..."
+	node scripts/install-opencode-workflows-loader.mjs
 
 dev:
 	@echo "==> Starting Vite dev server..."
