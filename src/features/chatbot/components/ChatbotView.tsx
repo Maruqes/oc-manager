@@ -34,8 +34,9 @@ const DEFAULT_TARGET_PATH = "~/.config/opencode/opencode.jsonc";
 const MAX_LIVE_LOGS = 120;
 const MAX_LIVE_LOG_TEXT = 6000;
 const MAX_LIVE_RAW_TEXT = 12000;
-const MAX_PROPOSAL_SCAN_TEXT = 2000;
+const MAX_PROPOSAL_SOURCE_TEXT = 160000;
 const MAX_PROPOSAL_SCAN_DEPTH = 8;
+const MAX_USER_PROMPT_TEXT = 20000;
 const validModes = new Set(["primary", "subagent", "all"]);
 const validPermissionValues = new Set(["allow", "ask", "deny"]);
 const reviewSteps: Array<{ id: ReviewStep; label: string; help: string }> = [
@@ -81,6 +82,10 @@ function normalizeText(value: unknown): string | undefined {
 function truncateText(value: string, maxLength: number) {
   if (value.length <= maxLength) return value;
   return `${value.slice(0, maxLength)}\n\n[truncated ${value.length - maxLength} chars in live preview]`;
+}
+
+function tailText(value: string, maxLength: number) {
+  return value.length <= maxLength ? value : value.slice(value.length - maxLength);
 }
 
 function toDisplayLogEntry(entry: ChatLogEntry): ChatLogEntry {
@@ -162,6 +167,33 @@ function mergeProposal(base: EditableAgent, proposal: AgentProposalShape, fallba
   };
 }
 
+function makeUniqueAgentNames(agents: EditableAgent[], reservedAgents: Agent[]) {
+  const usedBySource = new Map<string, Set<string>>();
+  const getUsedNames = (sourcePath: string) => {
+    const key = sourcePath || DEFAULT_TARGET_PATH;
+    const existing = usedBySource.get(key) ?? new Set<string>();
+    usedBySource.set(key, existing);
+    return existing;
+  };
+
+  for (const agent of reservedAgents) {
+    getUsedNames(agent.sourcePath).add(agent.name.toLowerCase());
+  }
+
+  return agents.map((agent, index) => {
+    const usedNames = getUsedNames(agent.sourcePath);
+    const baseName = normalizeName(agent.name, `generated-agent-${index + 1}`);
+    let name = baseName;
+    let suffix = 2;
+    while (usedNames.has(name.toLowerCase())) {
+      name = `${baseName}-${suffix}`;
+      suffix += 1;
+    }
+    usedNames.add(name.toLowerCase());
+    return name === agent.name ? agent : { ...agent, name };
+  });
+}
+
 function stripAnsi(value: string) {
   return value.replace(/[\u001b\u009b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[a-zA-Z\d]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "");
 }
@@ -220,7 +252,7 @@ function findProposalShape(value: unknown, depth = 0): unknown | undefined {
   if (depth > MAX_PROPOSAL_SCAN_DEPTH) return undefined;
   if (hasProposalShape(value)) return value;
   if (typeof value === "string") {
-    if (value.length > MAX_PROPOSAL_SCAN_TEXT) return undefined;
+    if (value.length > MAX_PROPOSAL_SOURCE_TEXT || (!value.includes('"agents"') && !value.includes('"agent"'))) return undefined;
     for (const candidate of extractJsonObjects(value).reverse()) {
       const nested = findProposalShape(candidate, depth + 1);
       if (nested) return nested;
@@ -236,7 +268,7 @@ function findProposalShape(value: unknown, depth = 0): unknown | undefined {
   }
   if (value && typeof value === "object") {
     const object = value as Record<string, unknown>;
-    const nestedValues = [object.text, object.content, object.message, object.delta, object.data];
+    const nestedValues = [object.text, object.content, object.message, object.delta, object.data, object.parts];
     if (object.part && typeof object.part === "object") {
       const part = object.part as Record<string, unknown>;
       nestedValues.push(part.text, part.content, part.message, part.delta);
@@ -245,47 +277,19 @@ function findProposalShape(value: unknown, depth = 0): unknown | undefined {
       const nested = findProposalShape(child, depth + 1);
       if (nested) return nested;
     }
+    for (const child of Object.values(object)) {
+      if (nestedValues.includes(child)) continue;
+      const nested = findProposalShape(child, depth + 1);
+      if (nested) return nested;
+    }
   }
-  return undefined;
-}
-
-function tryParseJson(value: string): unknown | undefined {
-  try {
-    return JSON.parse(stripAnsi(value).trim());
-  } catch {
-    return undefined;
-  }
-}
-
-function extractVisibleText(value: unknown): string | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const object = value as Record<string, unknown>;
-  for (const key of ["text", "content", "message", "delta"] as const) {
-    const text = object[key];
-    if (typeof text === "string" && text.trim()) return text.trim();
-  }
-  const partText = object.part && typeof object.part === "object" ? (object.part as Record<string, unknown>).text : undefined;
-  if (typeof partText === "string" && partText.trim()) return partText.trim();
   return undefined;
 }
 
 function getVisibleOutputText(entry: ChatLogEntry): string | null {
-  const rawParsed = tryParseJson(entry.raw);
-  if (rawParsed) {
-    if (findProposalShape(rawParsed)) return null;
-    const visible = extractVisibleText(rawParsed);
-    if (visible) return getVisibleOutputText({ ...entry, raw: "", text: visible });
-    return null;
-  }
-
   const text = entry.text.trim();
   if (!text) return null;
-  const parsed = tryParseJson(text);
-  if (parsed) {
-    if (findProposalShape(parsed)) return null;
-    return extractVisibleText(parsed) ?? null;
-  }
-  if (text.length <= MAX_PROPOSAL_SCAN_TEXT && extractJsonObjects(text).some((candidate) => findProposalShape(candidate))) return null;
+  if (text.includes('"agents"') || text.includes('"agent"')) return null;
   return text;
 }
 
@@ -315,34 +319,38 @@ function extractProposalThoughts(raw: unknown, logs: ChatLogEntry[]): string[] {
 function extractJsonObjects(text: string): unknown[] {
   const objects: unknown[] = [];
   const clean = stripAnsi(text);
-  for (let start = clean.indexOf("{"); start >= 0; start = clean.indexOf("{", start + 1)) {
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let index = start; index < clean.length; index += 1) {
-      const char = clean[index];
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (char === "\\") {
-        escaped = inString;
-        continue;
-      }
-      if (char === '"') {
-        inString = !inString;
-        continue;
-      }
-      if (inString) continue;
-      if (char === "{") depth += 1;
-      if (char === "}") depth -= 1;
-      if (depth === 0) {
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < clean.length; index += 1) {
+    const char = clean[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = inString;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+    }
+    if (char === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
         try {
           objects.push(JSON.parse(clean.slice(start, index + 1)));
         } catch {
           // Keep scanning; streaming output can contain partial/non-proposal JSON.
         }
-        break;
+        start = -1;
       }
     }
   }
@@ -354,7 +362,7 @@ function extractProposalJson(result: { stdout: string }, logs: ChatLogEntry[]): 
     .filter((entry) => entry.kind === "output")
     .map((entry) => entry.text)
     .join("\n");
-  for (const source of [result.stdout, outputText]) {
+  for (const source of [result.stdout, outputText].map((value) => tailText(value, MAX_PROPOSAL_SOURCE_TEXT))) {
     if (!source.trim()) continue;
     for (const candidate of extractJsonObjects(source).reverse()) {
       const proposal = findProposalShape(candidate);
@@ -485,6 +493,7 @@ export function ChatbotView() {
     }
     let unsubscribe: (() => void) | undefined;
     try {
+      if (prompt.length > MAX_USER_PROMPT_TEXT) throw new Error(`Prompt is too large. Keep it under ${MAX_USER_PROMPT_TEXT.toLocaleString()} characters.`);
       if (action === "edit" && !selectedTargetAgent) throw new Error("Select an agent to edit.");
       if (action === "create" && !targetPath && !proposalToRefine) throw new Error("Create a workflow/config file before generating agents. The default OpenCode config is read-only.");
       const chatPrompt = buildSystemPrompt(action, prompt, modelId, variant || undefined, selectedTargetAgent, proposalToRefine);
@@ -507,13 +516,14 @@ export function ChatbotView() {
       const result = await runAgentChat(modelId, variant || undefined, chatPrompt, streamId);
       const raw = extractProposalJson(result, liveLogs);
       const items = getProposalItems(raw, action);
-      const generatedAgents = items.map((item, index) => {
+      const mergedAgents = items.map((item, index) => {
         const base = proposalToRefine?.agents[index]
           ?? (action === "edit" && selectedTargetAgent
           ? agentToEditable(selectedTargetAgent)
           : createEmptyEditableAgent(targetPath));
         return mergeProposal(base, item, `generated-agent-${index + 1}`, action);
       });
+      const generatedAgents = action === "create" ? makeUniqueAgentNames(mergedAgents, agents) : mergedAgents;
       setProposal({
         agents: generatedAgents,
         raw,
@@ -670,9 +680,11 @@ export function ChatbotView() {
             className="form-textarea"
             rows={7}
             value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
+            maxLength={MAX_USER_PROMPT_TEXT}
+            onChange={(event) => setPrompt(event.target.value.slice(0, MAX_USER_PROMPT_TEXT))}
             placeholder={proposal ? "Refine the current proposal: change the prompt, permissions, names, descriptions..." : action === "create" ? "Create one primary agent and three subagents for..." : "Edit this agent so it..."}
           />
+          <span className="form-hint">{prompt.length.toLocaleString()} / {MAX_USER_PROMPT_TEXT.toLocaleString()} characters</span>
         </label>
 
         <div className="chat-actions">

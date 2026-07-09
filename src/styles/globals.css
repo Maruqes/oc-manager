@@ -317,6 +317,27 @@ code { color: #d5d8dc; font-size: 12px; overflow-wrap: anywhere; }
 .diff-after .diff-label { color: #bfe8d2; background: rgba(61, 106, 82, 0.25); }
 .diff-value { max-height: 220px; overflow: auto; min-width: 0; border: 1px solid #2c3138; padding: 8px; color: #d5d8dc; background: #0f1115; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
+.install-check-screen { display: grid; place-items: center; min-height: 100vh; padding: 20px; background: #0f1115; }
+.install-check-card { width: 100%; max-width: 460px; padding: 24px; background: #171a20; border: 1px solid #2c3138; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45); animation: install-check-fade-in 0.25s ease; }
+.install-check-card h1 { margin: 4px 0 12px; font-size: 22px; line-height: 1.2; letter-spacing: -0.02em; color: #e6e6e6; }
+.install-check-card p { margin: 0 0 12px; color: #b7bdc5; line-height: 1.55; }
+.install-check-card code { color: #eaf8ff; font-weight: 600; }
+.install-check-icon { display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 14px; border-radius: 10px; border: 1px solid transparent; }
+.install-check-icon.checking { color: #cbefff; background: #172932; border-color: #426a7a; }
+.install-check-icon.missing { color: #f3dc9c; background: #2c2618; border-color: #77622e; }
+.install-check-icon .spin-icon { animation: install-check-spin 1s linear infinite; }
+.install-check-error { margin: 14px 0; max-height: 260px; overflow: auto; border: 1px solid #3a414a; padding: 12px; color: #d5d8dc; background: #101318; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.install-check-actions { display: flex; gap: 10px; margin-top: 16px; }
+.install-check-actions .button { width: auto; }
+
+@keyframes install-check-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes install-check-fade-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .install-check-card,
+  .install-check-icon .spin-icon { animation: none; }
+}
+
 @media (max-width: 900px) {
   body { min-width: 0; }
   .app-shell { grid-template-columns: 1fr; height: auto; min-height: 100vh; }

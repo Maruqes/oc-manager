@@ -13,6 +13,10 @@ use std::time::{Duration, Instant};
 use tauri::Emitter;
 
 static CHAT_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
+const MAX_CHAT_PIPE_BYTES: usize = 256_000;
+const MAX_CHAT_EVENT_TEXT_CHARS: usize = 6_000;
+const MAX_CHAT_EVENT_RAW_CHARS: usize = 12_000;
+const CHAT_STREAM_FLUSH_INTERVAL: Duration = Duration::from_millis(120);
 
 #[tauri::command]
 pub async fn scan_agents(project_root: Option<String>) -> Result<ScanResult, AppError> {
@@ -165,6 +169,14 @@ pub struct AgentChatResult {
     pub stderr: String,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpencodeInstallationStatus {
+    pub installed: bool,
+    pub version: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentChatStreamEvent {
@@ -200,7 +212,7 @@ pub async fn run_agent_chat(
 
         let run_dir = create_agent_chat_run_dir(model, variant.as_deref())?;
 
-        let mut command = Command::new("opencode");
+        let mut command = opencode_command();
         command
             .arg("run")
             .arg("--dir")
@@ -537,6 +549,7 @@ fn read_stream_pipe<T: Read>(pipe: Option<T>, window: tauri::Window, stream_id: 
     };
 
     let mut output = Vec::new();
+    let mut pending = PendingChatStreamEvent::new(window, stream_id, stream.to_string());
     let mut reader = BufReader::new(pipe);
     let mut line = String::new();
     loop {
@@ -544,21 +557,109 @@ fn read_stream_pipe<T: Read>(pipe: Option<T>, window: tauri::Window, stream_id: 
         match reader.read_line(&mut line) {
             Ok(0) => break,
             Ok(_) => {
-                output.extend_from_slice(line.as_bytes());
+                append_bounded_bytes(&mut output, line.as_bytes(), MAX_CHAT_PIPE_BYTES);
                 let raw = line.trim_end().to_string();
                 if raw.is_empty() {
                     continue;
                 }
                 let (kind, text) = classify_agent_chat_line(&raw, stream);
-                emit_agent_chat_event(&window, &stream_id, stream, &kind, &text, &raw);
+                pending.push(&kind, &text, &raw);
             }
             Err(error) => {
-                emit_agent_chat_event(&window, &stream_id, stream, "error", &format!("Failed to read {stream}: {error}"), "");
+                pending.flush();
+                pending.emit_immediate(
+                    "error",
+                    &format!("Failed to read {stream}: {error}"),
+                    "",
+                );
                 break;
             }
         }
     }
+    pending.flush();
     output
+}
+
+struct PendingChatStreamEvent {
+    window: tauri::Window,
+    stream_id: String,
+    stream: String,
+    kind: Option<String>,
+    text: String,
+    raw: String,
+    last_flush: Instant,
+}
+
+impl PendingChatStreamEvent {
+    fn new(window: tauri::Window, stream_id: String, stream: String) -> Self {
+        Self {
+            window,
+            stream_id,
+            stream,
+            kind: None,
+            text: String::new(),
+            raw: String::new(),
+            last_flush: Instant::now(),
+        }
+    }
+
+    fn push(&mut self, kind: &str, text: &str, raw: &str) {
+        if !matches!(kind, "thinking" | "output") {
+            self.flush();
+            self.emit_immediate(kind, text, raw);
+            return;
+        }
+
+        if self.kind.as_deref().is_some_and(|current| current != kind) {
+            self.flush();
+        }
+
+        self.kind.get_or_insert_with(|| kind.to_string());
+        append_bounded_text(&mut self.text, text, MAX_CHAT_EVENT_TEXT_CHARS);
+        append_bounded_text(&mut self.raw, raw, MAX_CHAT_EVENT_RAW_CHARS);
+
+        if self.last_flush.elapsed() >= CHAT_STREAM_FLUSH_INTERVAL {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        let Some(kind) = self.kind.take() else {
+            return;
+        };
+        self.emit_immediate(&kind, &self.text, &self.raw);
+        self.text.clear();
+        self.raw.clear();
+        self.last_flush = Instant::now();
+    }
+
+    fn emit_immediate(&self, kind: &str, text: &str, raw: &str) {
+        emit_agent_chat_event(&self.window, &self.stream_id, &self.stream, kind, text, raw);
+    }
+}
+
+fn append_bounded_bytes(target: &mut Vec<u8>, bytes: &[u8], max_bytes: usize) {
+    target.extend_from_slice(bytes);
+    if target.len() > max_bytes {
+        let excess = target.len() - max_bytes;
+        target.drain(..excess);
+    }
+}
+
+fn append_bounded_text(target: &mut String, value: &str, max_chars: usize) {
+    if !target.is_empty() {
+        target.push('\n');
+    }
+    target.push_str(value);
+    let excess = target.chars().count().saturating_sub(max_chars);
+    if excess > 0 {
+        let start = target
+            .char_indices()
+            .nth(excess)
+            .map(|(index, _)| index)
+            .unwrap_or(target.len());
+        target.drain(..start);
+    }
 }
 
 fn classify_agent_chat_line(raw: &str, stream: &str) -> (String, String) {
@@ -631,9 +732,72 @@ fn emit_agent_chat_event(window: &tauri::Window, stream_id: &str, stream: &str, 
     });
 }
 
+#[tauri::command]
+pub async fn check_opencode_installation() -> Result<OpencodeInstallationStatus, AppError> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let output = opencode_command()
+            .arg("--version")
+            .stdin(Stdio::null())
+            .output();
+
+        match output {
+            Ok(output) if output.status.success() => {
+                let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                Ok(OpencodeInstallationStatus {
+                    installed: true,
+                    version: if version.is_empty() {
+                        (!stderr.is_empty()).then_some(stderr)
+                    } else {
+                        Some(version)
+                    },
+                    error: None,
+                })
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                Ok(OpencodeInstallationStatus {
+                    installed: false,
+                    version: None,
+                    error: Some(if stderr.is_empty() { stdout } else { stderr }),
+                })
+            }
+            Err(error) => Ok(OpencodeInstallationStatus {
+                installed: false,
+                version: None,
+                error: Some(format!("opencode was not found in PATH: {error}")),
+            }),
+        }
+    })
+    .await
+    .map_err(|error| AppError::Filesystem(format!("opencode check thread failed: {error}")))?
+}
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(target_os = "windows")]
+fn opencode_command() -> Command {
+    use std::os::windows::process::CommandExt;
+
+    let mut command = Command::new("opencode.cmd");
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+}
+
+#[cfg(not(target_os = "windows"))]
+fn opencode_command() -> Command {
+    Command::new("opencode")
+}
+
 #[cfg(target_os = "windows")]
 fn npx_command() -> Command {
-    Command::new("npx.cmd")
+    use std::os::windows::process::CommandExt;
+
+    let mut command = Command::new("npx.cmd");
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -731,7 +895,7 @@ fn resolve_workflows_path(file_name: &str, extension: &str) -> Result<PathBuf, A
 #[tauri::command]
 pub async fn list_opencode_models() -> Result<Vec<ModelInfo>, AppError> {
     tauri::async_runtime::spawn_blocking(|| {
-        let output = Command::new("opencode")
+        let output = opencode_command()
             .arg("models")
             .output()
             .map_err(|error| AppError::Filesystem(format!("Failed to run opencode models: {error}")))?;
@@ -785,7 +949,7 @@ pub async fn list_opencode_models() -> Result<Vec<ModelInfo>, AppError> {
 }
 
 fn load_provider_model_variants(provider: &str) -> Result<BTreeMap<String, Vec<String>>, AppError> {
-    let output = Command::new("opencode")
+    let output = opencode_command()
         .arg("models")
         .arg(provider)
         .arg("--verbose")

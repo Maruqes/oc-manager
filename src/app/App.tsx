@@ -1,5 +1,10 @@
 import { AgentsPage } from "../pages/AgentsPage";
+import { OpencodeInstallGuard } from "../features/system/components/OpencodeInstallGuard";
 
 export function App() {
-  return <AgentsPage />;
+  return (
+    <OpencodeInstallGuard>
+      <AgentsPage />
+    </OpencodeInstallGuard>
+  );
 }

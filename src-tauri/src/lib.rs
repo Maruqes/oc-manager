@@ -19,6 +19,7 @@ pub fn run() {
             commands::save_permission_profile,
             commands::create_config_file,
             commands::run_agent_chat,
+            commands::check_opencode_installation,
             commands::list_opencode_models,
             commands::list_skills,
             commands::install_skill,
